@@ -14,6 +14,29 @@
 	height: 14px;
 }
 
+/* Conflict indicator in status bar */
+.syncthing-conflict-indicator {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	cursor: pointer;
+	color: var(--text-warning);
+}
+
+.syncthing-conflict-indicator:hover {
+	color: var(--text-error);
+}
+
+.syncthing-conflict-icon {
+	display: flex;
+	align-items: center;
+}
+
+.syncthing-conflict-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
 /* Hide sync-conflict files from file explorer */
 .nav-file-title[data-path*="sync-conflict"] {
 	display: none;

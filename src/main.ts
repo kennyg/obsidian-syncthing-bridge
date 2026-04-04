@@ -1,8 +1,13 @@
-import { Plugin, PluginSettingTab, App, Setting, Notice, addIcon, setIcon, Modal, TFile, ItemView, WorkspaceLeaf } from "obsidian";
+import { Plugin, PluginSettingTab, App, Setting, Notice, addIcon, setIcon, setTooltip, Modal, TFile } from "obsidian";
 
-// Syncthing-style connected nodes icon
+const CONFLICT_MARKER = ".sync-conflict-";
+
 const SYNC_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M20 12a8 8 0 0 1-16 0"/><circle cx="12" cy="12" r="2"/></svg>`;
 const SYNC_ICON_OFF = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 16 0" opacity="0.3"/><path d="M20 12a8 8 0 0 1-16 0" opacity="0.3"/><circle cx="12" cy="12" r="2" opacity="0.3"/><line x1="4" y1="4" x2="20" y2="20"/></svg>`;
+
+function shortDeviceId(id: string): string {
+	return `${id.substring(0, 7)}...`;
+}
 
 interface SyncthingDevice {
 	deviceID: string;
@@ -35,9 +40,12 @@ const DEFAULT_SETTINGS: SyncthingBridgeSettings = {
 };
 
 export default class SyncthingBridgePlugin extends Plugin {
-	settings: SyncthingBridgeSettings = DEFAULT_SETTINGS;
+	settings: SyncthingBridgeSettings = { ...DEFAULT_SETTINGS };
 	statusBarEl: HTMLElement | null = null;
+	conflictBarEl: HTMLElement | null = null;
 	pollInterval: number | null = null;
+	lastStatusText: string | null = null;
+	lastConflictCount = 0;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -48,6 +56,12 @@ export default class SyncthingBridgePlugin extends Plugin {
 		this.statusBarEl = this.addStatusBarItem();
 		this.statusBarEl.addClass("syncthing-status");
 		this.setStatusBar("syncthing-offline", "Syncthing: ...");
+
+		this.conflictBarEl = this.addStatusBarItem();
+		this.conflictBarEl.addClass("syncthing-conflict-indicator");
+		this.conflictBarEl.hide();
+		setTooltip(this.conflictBarEl, "Sync conflicts — click to resolve", { placement: "top" });
+		this.conflictBarEl.addEventListener("click", () => this.openConflictResolver());
 
 		this.addCommand({
 			id: "syncthing-status",
@@ -103,7 +117,7 @@ export default class SyncthingBridgePlugin extends Plugin {
 		}
 	}
 
-	async apiGet(endpoint: string): Promise<unknown> {
+	async apiGet<T>(endpoint: string): Promise<T> {
 		const headers: Record<string, string> = {};
 		if (this.settings.apiKey) {
 			headers["X-API-Key"] = this.settings.apiKey;
@@ -112,57 +126,72 @@ export default class SyncthingBridgePlugin extends Plugin {
 		if (!res.ok) {
 			throw new Error(`Syncthing API ${res.status}: ${res.statusText}`);
 		}
-		return res.json();
+		return res.json() as Promise<T>;
 	}
 
 	async poll(): Promise<void> {
 		try {
-			const connections = (await this.apiGet("/rest/system/connections")) as {
+			const { connections } = await this.apiGet<{
 				connections: Record<string, { connected: boolean }>;
-			};
+			}>("/rest/system/connections");
 
-			const connectedCount = Object.values(connections.connections).filter(
+			const connectedCount = Object.values(connections).filter(
 				(c) => c.connected
 			).length;
-			const totalCount = Object.keys(connections.connections).length;
+			const totalCount = Object.keys(connections).length;
 
 			const icon = connectedCount > 0 ? "syncthing-connected" : "syncthing-offline";
-			this.setStatusBar(icon, ` ${connectedCount}/${totalCount} devices`);
+			const statusText = ` ${connectedCount}/${totalCount} devices`;
+
+			if (statusText !== this.lastStatusText) {
+				this.setStatusBar(icon, statusText);
+				this.lastStatusText = statusText;
+			}
 
 			if (this.settings.showConflictNotices) {
-				await this.checkConflicts();
+				this.checkConflicts();
 			}
 		} catch {
-			this.setStatusBar("syncthing-offline", " offline");
+			if (this.lastStatusText !== " offline") {
+				this.setStatusBar("syncthing-offline", " offline");
+				this.lastStatusText = " offline";
+			}
 		}
 	}
 
-	async checkConflicts(): Promise<void> {
-		const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
-		if (!vaultPath) return;
-
-		const files = this.app.vault.getFiles();
-		const conflicts = files.filter((f) => f.name.includes(".sync-conflict-"));
-		if (conflicts.length > 0) {
-			new Notice(`Syncthing: ${conflicts.length} conflict(s) detected`);
+	checkConflicts(): void {
+		const count = this.findConflicts().length;
+		if (count > 0 && count !== this.lastConflictCount) {
+			new Notice(`Syncthing: ${count} conflict(s) detected`);
 		}
+		this.lastConflictCount = count;
+		this.updateConflictIndicator(count);
+	}
+
+	updateConflictIndicator(count: number): void {
+		if (!this.conflictBarEl) return;
+		if (count === 0) {
+			this.conflictBarEl.hide();
+			return;
+		}
+		this.conflictBarEl.empty();
+		const iconEl = this.conflictBarEl.createSpan({ cls: "syncthing-conflict-icon" });
+		setIcon(iconEl, "alert-triangle");
+		this.conflictBarEl.createSpan({ text: ` ${count}` });
+		setTooltip(this.conflictBarEl, `${count} sync conflict${count === 1 ? "" : "s"} — click to resolve`, { placement: "top" });
+		this.conflictBarEl.show();
 	}
 
 	async showStatus(): Promise<void> {
 		try {
-			const system = (await this.apiGet("/rest/system/status")) as {
-				myID: string;
-			};
-			const connections = (await this.apiGet("/rest/system/connections")) as {
-				connections: Record<string, { connected: boolean; type: string }>;
-			};
-			const config = (await this.apiGet("/rest/config")) as {
-				devices: SyncthingDevice[];
-				folders: SyncthingFolder[];
-			};
+			const [system, { connections }, config] = await Promise.all([
+				this.apiGet<{ myID: string }>("/rest/system/status"),
+				this.apiGet<{ connections: Record<string, { connected: boolean; type: string }> }>("/rest/system/connections"),
+				this.apiGet<{ devices: SyncthingDevice[]; folders: SyncthingFolder[] }>("/rest/config"),
+			]);
 
 			const lines: string[] = [
-				`Device ID: ${system.myID.substring(0, 7)}...`,
+				`Device ID: ${shortDeviceId(system.myID)}`,
 				`Folders: ${config.folders.length}`,
 				"",
 				"Devices:",
@@ -170,9 +199,9 @@ export default class SyncthingBridgePlugin extends Plugin {
 
 			for (const device of config.devices) {
 				if (device.deviceID === system.myID) continue;
-				const conn = connections.connections[device.deviceID];
+				const conn = connections[device.deviceID];
 				const status = conn?.connected ? "connected" : "disconnected";
-				lines.push(`  ${device.name || device.deviceID.substring(0, 7)}: ${status}`);
+				lines.push(`  ${device.name || shortDeviceId(device.deviceID)}: ${status}`);
 			}
 
 			new Notice(lines.join("\n"), 10000);
@@ -183,7 +212,7 @@ export default class SyncthingBridgePlugin extends Plugin {
 
 	findConflicts(): { original: TFile; conflict: TFile }[] {
 		const files = this.app.vault.getFiles();
-		const conflictFiles = files.filter((f) => f.name.includes(".sync-conflict-"));
+		const conflictFiles = files.filter((f) => f.name.includes(CONFLICT_MARKER));
 		const pairs: { original: TFile; conflict: TFile }[] = [];
 
 		for (const conflict of conflictFiles) {
@@ -289,10 +318,8 @@ class SyncthingBridgeSettingTab extends PluginSettingTab {
 			.addButton((button) =>
 				button.setButtonText("Test").onClick(async () => {
 					try {
-						const status = (await this.plugin.apiGet("/rest/system/status")) as {
-							myID: string;
-						};
-						new Notice(`Connected! Device: ${status.myID.substring(0, 7)}...`);
+						const status = await this.plugin.apiGet<{ myID: string }>("/rest/system/status");
+						new Notice(`Connected! Device: ${shortDeviceId(status.myID)}`);
 					} catch (e) {
 						new Notice(
 							`Connection failed: ${e instanceof Error ? e.message : String(e)}`
