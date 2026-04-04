@@ -1,0 +1,9 @@
+{
+	"id": "syncthing-bridge",
+	"name": "Syncthing Bridge",
+	"version": "0.1.0",
+	"minAppVersion": "1.0.0",
+	"description": "Manage Syncthing-powered remote vault sync from within Obsidian. Monitor sync status, resolve conflicts, and manage multiple remote devices.",
+	"author": "kennyg",
+	"isDesktopOnly": true
+}

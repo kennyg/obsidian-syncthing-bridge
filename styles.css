@@ -1,0 +1,82 @@
+.syncthing-status {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.syncthing-status-icon {
+	display: flex;
+	align-items: center;
+}
+
+.syncthing-status-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* Hide sync-conflict files from file explorer */
+.nav-file-title[data-path*="sync-conflict"] {
+	display: none;
+}
+
+/* Conflict resolver modal */
+.syncthing-conflict-modal {
+	width: 80vw;
+	max-width: 900px;
+}
+
+.conflict-header h2 {
+	margin-bottom: 4px;
+}
+
+.conflict-path {
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	color: var(--text-muted);
+	margin: 0;
+}
+
+.conflict-meta {
+	font-size: var(--font-smaller);
+	color: var(--text-muted);
+	margin: 4px 0 12px;
+}
+
+.conflict-diff {
+	display: flex;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.conflict-pane {
+	flex: 1;
+	min-width: 0;
+}
+
+.conflict-pane h3 {
+	margin: 0 0 6px;
+	font-size: var(--font-small);
+}
+
+.conflict-content {
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 10px;
+	max-height: 400px;
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: var(--font-smaller);
+}
+
+.conflict-content code {
+	font-family: var(--font-monospace);
+}
+
+.conflict-actions {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+}
