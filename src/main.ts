@@ -334,12 +334,14 @@ class ConflictResolverModal extends Modal {
 	plugin: SyncthingBridgePlugin;
 	pairs: { original: TFile; conflict: TFile }[];
 	currentIndex: number;
+	resolvedCount: number;
 
 	constructor(app: App, plugin: SyncthingBridgePlugin, pairs: { original: TFile; conflict: TFile }[]) {
 		super(app);
 		this.plugin = plugin;
 		this.pairs = pairs;
 		this.currentIndex = 0;
+		this.resolvedCount = 0;
 	}
 
 	async onOpen(): Promise<void> {
@@ -352,9 +354,14 @@ class ConflictResolverModal extends Modal {
 		contentEl.empty();
 
 		if (this.currentIndex >= this.pairs.length) {
-			contentEl.createEl("h2", { text: "All conflicts resolved!" });
-			const doneBtn = contentEl.createEl("button", { text: "Close" });
-			doneBtn.addEventListener("click", () => this.close());
+			const skipped = this.pairs.length - this.resolvedCount;
+			if (skipped === 0) {
+				contentEl.createEl("h2", { text: "All conflicts resolved!" });
+			} else {
+				contentEl.createEl("h2", { text: `Done — ${skipped} conflict${skipped === 1 ? "" : "s"} skipped` });
+				contentEl.createEl("p", { text: `Resolved ${this.resolvedCount} of ${this.pairs.length} conflicts.`, cls: "conflict-meta" });
+			}
+			contentEl.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 			return;
 		}
 
@@ -367,57 +374,51 @@ class ConflictResolverModal extends Modal {
 		header.createEl("h2", { text: `Conflict ${this.currentIndex + 1} of ${this.pairs.length}` });
 		header.createEl("p", { text: pair.original.path, cls: "conflict-path" });
 
-		// Parse conflict filename for metadata
+		// Parse conflict filename for metadata and resolve device name
 		const match = pair.conflict.name.match(/\.sync-conflict-(\d{8})-(\d{6})-(\w+)\./);
+		let conflictDeviceName = "another device";
+		let localDeviceName = "this device";
 		if (match) {
 			const date = `${match[1]!.slice(0, 4)}-${match[1]!.slice(4, 6)}-${match[1]!.slice(6, 8)}`;
 			const time = `${match[2]!.slice(0, 2)}:${match[2]!.slice(2, 4)}:${match[2]!.slice(4, 6)}`;
+			const shortId = match[3]!;
+
+			try {
+				const [system, config] = await Promise.all([
+					this.plugin.apiGet<{ myID: string }>("/rest/system/status"),
+					this.plugin.apiGet<{ devices: SyncthingDevice[] }>("/rest/config"),
+				]);
+				const conflictDevice = config.devices.find((d) => d.deviceID.startsWith(shortId));
+				const localDevice = config.devices.find((d) => d.deviceID === system.myID);
+				if (conflictDevice) conflictDeviceName = conflictDevice.name || shortDeviceId(conflictDevice.deviceID);
+				if (localDevice) localDeviceName = localDevice.name || shortDeviceId(localDevice.deviceID);
+			} catch {
+				conflictDeviceName = shortId;
+			}
+
 			header.createEl("p", {
-				text: `Conflict from device ${match[3]} at ${date} ${time}`,
+				text: `Changed on ${conflictDeviceName} at ${date} ${time}`,
 				cls: "conflict-meta",
 			});
 		}
 
-		// Diff view - side by side
+		// Diff view with actions below each pane
 		const diffContainer = contentEl.createDiv({ cls: "conflict-diff" });
 
 		const leftPane = diffContainer.createDiv({ cls: "conflict-pane" });
-		leftPane.createEl("h3", { text: "Current version" });
-		const leftContent = leftPane.createEl("pre", { cls: "conflict-content" });
-		leftContent.createEl("code", { text: originalContent });
-
-		const rightPane = diffContainer.createDiv({ cls: "conflict-pane" });
-		rightPane.createEl("h3", { text: "Conflict version" });
-		const rightContent = rightPane.createEl("pre", { cls: "conflict-content" });
-		rightContent.createEl("code", { text: conflictContent });
-
-		// Actions
-		const actions = contentEl.createDiv({ cls: "conflict-actions" });
-
-		const keepCurrentBtn = actions.createEl("button", {
-			text: "Keep current",
-			cls: "mod-warning",
-		});
+		leftPane.createEl("h3", { text: `Current version (${localDeviceName})` });
+		leftPane.createEl("pre", { cls: "conflict-content" }).createEl("code", { text: originalContent });
+		const keepCurrentBtn = leftPane.createEl("button", { text: "Keep this", cls: "mod-cta conflict-action-btn" });
 		keepCurrentBtn.addEventListener("click", async () => {
 			await this.app.vault.delete(pair.conflict);
 			new Notice(`Kept current version of ${pair.original.name}`);
+			this.resolvedCount++;
 			this.currentIndex++;
 			await this.renderConflict();
 		});
 
-		const keepConflictBtn = actions.createEl("button", {
-			text: "Keep conflict version",
-			cls: "mod-warning",
-		});
-		keepConflictBtn.addEventListener("click", async () => {
-			await this.app.vault.modify(pair.original, conflictContent);
-			await this.app.vault.delete(pair.conflict);
-			new Notice(`Replaced with conflict version of ${pair.original.name}`);
-			this.currentIndex++;
-			await this.renderConflict();
-		});
-
-		const keepBothBtn = actions.createEl("button", { text: "Keep both" });
+		const middlePane = diffContainer.createDiv({ cls: "conflict-pane-middle" });
+		const keepBothBtn = middlePane.createEl("button", { text: "Keep both", cls: "conflict-action-btn" });
 		keepBothBtn.addEventListener("click", async () => {
 			const ext = pair.original.extension;
 			const baseName = pair.original.basename;
@@ -426,12 +427,25 @@ class ConflictResolverModal extends Modal {
 				: `${baseName} (conflict).${ext}`;
 			await this.app.vault.rename(pair.conflict, newPath);
 			new Notice(`Kept both versions of ${pair.original.name}`);
+			this.resolvedCount++;
+			this.currentIndex++;
+			await this.renderConflict();
+		});
+		const skipBtn = middlePane.createEl("button", { text: "Skip", cls: "conflict-action-btn" });
+		skipBtn.addEventListener("click", async () => {
 			this.currentIndex++;
 			await this.renderConflict();
 		});
 
-		const skipBtn = actions.createEl("button", { text: "Skip" });
-		skipBtn.addEventListener("click", async () => {
+		const rightPane = diffContainer.createDiv({ cls: "conflict-pane" });
+		rightPane.createEl("h3", { text: `Conflict version (${conflictDeviceName})` });
+		rightPane.createEl("pre", { cls: "conflict-content" }).createEl("code", { text: conflictContent });
+		const keepConflictBtn = rightPane.createEl("button", { text: "Keep this", cls: "mod-cta conflict-action-btn" });
+		keepConflictBtn.addEventListener("click", async () => {
+			await this.app.vault.modify(pair.original, conflictContent);
+			await this.app.vault.delete(pair.conflict);
+			new Notice(`Replaced with conflict version of ${pair.original.name}`);
+			this.resolvedCount++;
 			this.currentIndex++;
 			await this.renderConflict();
 		});
